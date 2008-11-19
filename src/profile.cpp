@@ -3,6 +3,7 @@
 #include "sys/stat.h"
 #include "sys/mman.h"
 #include "sys/ptrace.h"
+#include "sys/wait.h"
 #include "time.h"
 #include "fcntl.h"
 #include "unistd.h"
@@ -51,6 +52,8 @@ bool done = false;
 void
 handleSignal(int signal, siginfo_t* info, void*)
 {
+  //fprintf(stderr, "signal %d\n", signal);
+
   if (signal == SIGINT
       or info->si_code == CLD_EXITED
       or info->si_code == CLD_KILLED
@@ -119,10 +122,12 @@ set(unsigned capacity)
 void
 setDispose(Set* set, void (*dispose)(void*))
 {
-  for (unsigned i = 0; i < set->size; ++i) {
-    dispose(set->entries[i].value);
+  if (set) {
+    for (unsigned i = 0; i < set->size; ++i) {
+      dispose(set->entries[i].value);
+    }
+    free(set);
   }
-  free(set);
 }
 
 Set::Entry*
@@ -173,7 +178,7 @@ add(Set** setp, void* value, unsigned hash)
 
     Set* newSet = ::set(capacity);
 
-    memset(set->index, 0xFF, sizeof(int) * capacity);
+    memset(newSet->index, 0xFF, sizeof(int) * capacity);
 
     if (set) {
       for (unsigned i = 0; i < set->capacity; ++i) {
@@ -190,7 +195,7 @@ add(Set** setp, void* value, unsigned hash)
     *setp = set = newSet;
   }
 
-  return add(set, value, 0);
+  return add(set, value, hash);
 }
 
 class Trace {
@@ -219,12 +224,14 @@ trace()
 void
 traceDispose(Trace* t)
 {
-  for (Trace::Element* e = t->elements; e;) {
-    Trace::Element* n = e->next;
-    free(e);
-    e = n;
+  if (t) {
+    for (Trace::Element* e = t->elements; e;) {
+      Trace::Element* n = e->next;
+      free(e);
+      e = n;
+    }
+    free(t);
   }
-  free(t);
 }
 
 Trace::Element*
@@ -244,10 +251,16 @@ hash(Trace* t)
 }
 
 int
-traceCompare(const Trace* a, const Trace* b)
+traceCountCompare(const Trace** a, const Trace** b)
 {
-  Trace::Element* ea = a->elements;
-  Trace::Element* eb = b->elements;
+  return (*b)->count - (*a)->count;
+}
+
+int
+traceCompare(const Trace** a, const Trace** b)
+{
+  Trace::Element* ea = (*a)->elements;
+  Trace::Element* eb = (*b)->elements;
   while (true) {
     if (ea and eb) {
       if (ea->address == eb->address) {
@@ -260,8 +273,10 @@ traceCompare(const Trace* a, const Trace* b)
       }
     } else if (ea) {
       return -1;
-    } else {
+    } else if (eb) {
       return 1;
+    } else {
+      return 0;
     }
   }
 }
@@ -269,7 +284,7 @@ traceCompare(const Trace* a, const Trace* b)
 bool
 traceEqual(const Trace* a, const Trace* b)
 {
-  return traceCompare(a, b) == 0;
+  return traceCompare(&a, &b) == 0;
 }
 
 void
@@ -348,10 +363,12 @@ symbolTable(unsigned capacity)
 void
 symbolTableDispose(SymbolTable* t)
 {
-  for (unsigned i = 0; i < t->size; ++i) {
-    free(t->symbols[i].name);
+  if (t) {
+    for (unsigned i = 0; i < t->size; ++i) {
+      free(t->symbols[i].name);
+    }
+    free(t);
   }
-  free(t);
 }
 
 char*
@@ -372,11 +389,23 @@ addSymbol(SymbolTable* table, uintptr_t start, unsigned size, const char* name)
 SymbolTable*
 append(SymbolTable* a, SymbolTable* b)
 {
-  SymbolTable* c = symbolTable(a->size + b->size);
-  memcpy(c->symbols, a->symbols, a->size * sizeof(Symbol));
-  memcpy(c->symbols, b->symbols + a->size, b->size * sizeof(Symbol));
-  c->size = a->size + b->size;
-  return c;
+  if (a and b) {
+    SymbolTable* c = symbolTable(a->size + b->size);
+
+    memcpy(c->symbols, a->symbols, a->size * sizeof(Symbol));
+    memcpy(c->symbols + a->size, b->symbols, b->size * sizeof(Symbol));
+
+    c->size = a->size + b->size;
+
+    free(a);
+    free(b);
+
+    return c;
+  } else if (a) {
+    return a;
+  } else {
+    return b;
+  }
 }
 
 SymbolTable*
@@ -401,7 +430,7 @@ readElfSymbolTable(uint8_t* start, unsigned size)
 
         const char* strings = reinterpret_cast<const char*>
           (start + reinterpret_cast<ElfSectionHeader*>
-           (fileHeader->e_shoff
+           (start + fileHeader->e_shoff
             + (sectionHeader->sh_link
                * fileHeader->e_shentsize))->sh_offset);
 
@@ -503,6 +532,8 @@ loadTextSymbols(const char* file)
 const char*
 findSymbol(SymbolTable* table, uintptr_t address)
 {
+  if (table == 0) return 0;
+
   unsigned bottom = 0;
   unsigned top = table->size;
 
@@ -527,6 +558,14 @@ attach(int thread)
 {
   errno = 0;
   ptrace(PTRACE_ATTACH, thread, 0, 0);
+//   fprintf(stderr, "attach %d errno %s\n", thread, strerror(errno));
+  
+  if (errno) return false;
+
+  int status;
+  waitpid(thread, &status, WUNTRACED);
+//   fprintf(stderr, "wait %d errno %s\n", thread, strerror(errno));
+
   return errno == 0;  
 }
 
@@ -534,6 +573,7 @@ void
 detach(int thread)
 {
   ptrace(PTRACE_DETACH, thread, 0, 0);
+//   fprintf(stderr, "detach %d errno %s\n", thread, strerror(errno));
   errno = 0;
 }
 
@@ -544,22 +584,28 @@ trace(int thread)
   Trace::Element* last = 0;
   uintptr_t ip = ptrace
     (PTRACE_PEEKUSER, thread, Instruction * BytesPerWord, 0);
+//   fprintf(stderr, "ip %p trace %d errno %s\n", ip, thread, strerror(errno));
 
   if (errno == 0) {
     uintptr_t bp = ptrace
       (PTRACE_PEEKUSER, thread, Base * BytesPerWord, 0);
+//     fprintf(stderr, "bp %p trace %d errno %s\n", bp, thread, strerror(errno));
 
     if (errno == 0) {
       add(t, &last, ip);
 
       while (errno == 0 and bp) {
         ip = ptrace(PTRACE_PEEKDATA, thread, bp + BytesPerWord, 0);
+//         fprintf(stderr, "ra %p trace %d errno %s\n",
+//                 ip, thread, strerror(errno));
 
         if (errno == 0) {
           add(t, &last, ip);
           
           uintptr_t next = ptrace(PTRACE_PEEKDATA, thread, bp, 0);
-          if (next <= bp) {
+//           fprintf(stderr, "next bp %p trace %d errno %s\n",
+//                   next, thread, strerror(errno));
+          if (errno or next <= bp) {
             break;
           } else {
             bp = next;
@@ -622,21 +668,23 @@ method(const char* name)
 void
 methodDispose(Method* m)
 {
-  free(m);
+  if (m) {
+    free(m);
+  }
 }
 
 int
-methodTotalCompare(const Method* a, const Method* b)
+methodTotalCompare(const Method** a, const Method** b)
 {
-  return static_cast<int>(b->count)
-    - static_cast<int>(a->count);
+  return static_cast<int>((*b)->count)
+    - static_cast<int>((*a)->count);
 }
 
 int
-methodNetCompare(const Method* a, const Method* b)
+methodNetCompare(const Method** a, const Method** b)
 {
-  return static_cast<int>(b->count - b->childCount)
-    - static_cast<int>(a->count - a->childCount);
+  return static_cast<int>((*b)->count - (*b)->childCount)
+    - static_cast<int>((*a)->count - (*a)->childCount);
 }
 
 bool
@@ -657,50 +705,59 @@ dump(Trace* t, FILE* out)
 {
   fprintf(out, "%d time(s):\n", t->count);
   for (Trace::Element* e = t->elements; e; e = e->next) {
-    fprintf(out, "  at %p %s\n",
-            reinterpret_cast<void*>(e->address), e->symbol);
+    fprintf(out, "  at %p", reinterpret_cast<void*>(e->address));
+    if (e->symbol) {
+      fprintf(out, " %s", e->symbol);
+    }
+    fprintf(out, "\n");
   }
 }
 
 void
 dump(Context* c, SymbolTable* symbolTable, FILE* out)
 {
-  qsort(symbolTable->symbols, symbolTable->size, sizeof(Symbol),
-        reinterpret_cast<int (*)(const void*, const void*)>(symbolCompare));
+  if (symbolTable) {
+    qsort(symbolTable->symbols, symbolTable->size, sizeof(Symbol),
+          reinterpret_cast<int (*)(const void*, const void*)>(symbolCompare));
+  }
 
   Set* methods = 0;
-  Trace** traceArray = static_cast<Trace**>
-    (malloc(c->traces->size * BytesPerWord));
+  Trace** traceArray = 0;
   unsigned total = 0;
 
-  for (unsigned i = 0; i < c->traces->size; ++i) {
-    Trace* t = static_cast<Trace*>(c->traces->entries[i].value);
-    traceArray[i] = t;
+  if (c->traces) {
+    traceArray = static_cast<Trace**>(malloc(c->traces->size * BytesPerWord));
 
-    total += t->count;
+    for (unsigned i = 0; i < c->traces->size; ++i) {
+      Trace* t = static_cast<Trace*>(c->traces->entries[i].value);
+      traceArray[i] = t;
 
-    for (Trace::Element* e = t->elements; e; e = e->next) {
-      const char* s = e->symbol = findSymbol(symbolTable, e->address);
-      if (s) {
-        unsigned h = hash(s);
-        Method n(s);
+      total += t->count;
 
-        Set::Entry* se = find
-          (methods, &n, h, reinterpret_cast<bool (*)(const void*, const void*)>
-           (methodEqual));
+      for (Trace::Element* e = t->elements; e; e = e->next) {
+        const char* s = e->symbol = findSymbol(symbolTable, e->address);
+        if (s) {
+          unsigned h = hash(s);
+          Method n(s);
 
-        Method* m;
-        if (se) {
-          m = static_cast<Method*>(se->value);
-        } else {
-          m = method(s);
-          add(&methods, m, h);
-        }
+          Set::Entry* se = find
+            (methods, &n, h,
+             reinterpret_cast<bool (*)(const void*, const void*)>
+             (methodEqual));
 
-        m->count += t->count;
+          Method* m;
+          if (se) {
+            m = static_cast<Method*>(se->value);
+          } else {
+            m = method(s);
+            add(&methods, m, h);
+          }
 
-        if (e != t->elements) {
-          m->childCount += t->count;
+          m->count += t->count;
+
+          if (e != t->elements) {
+            m->childCount += t->count;
+          }
         }
       }
     }
@@ -708,46 +765,52 @@ dump(Context* c, SymbolTable* symbolTable, FILE* out)
 
   fprintf(out, " total count: %5d\n", total);
 
-  fprintf(out, "\nmethods by count: (total, net, name)\n\n");
+  if (methods) {
+    fprintf(out, "\nmethods by count: (total, net, name)\n\n");
   
-  Method** methodArray = static_cast<Method**>
-    (malloc(methods->size * BytesPerWord));
+    Method** methodArray = static_cast<Method**>
+      (malloc(methods->size * BytesPerWord));
   
-  for (unsigned i = 0; i < methods->size; ++i) {
-    methodArray[i] = static_cast<Method*>(methods->entries[i].value);
+    for (unsigned i = 0; i < methods->size; ++i) {
+      methodArray[i] = static_cast<Method*>(methods->entries[i].value);
+    }
+
+    qsort(methodArray, methods->size, sizeof(Method*),
+          reinterpret_cast<int (*)(const void*, const void*)>
+          (methodTotalCompare));
+
+    for (unsigned i = 0; i < methods->size; ++i) {
+      dump(methodArray[i], out);
+    }
+
+    fprintf(out, "\nmethods by net count: (total, net, name)\n\n");
+
+    qsort(methodArray, methods->size, sizeof(Method*),
+          reinterpret_cast<int (*)(const void*, const void*)>
+          (methodNetCompare));
+
+    for (unsigned i = 0; i < methods->size; ++i) {
+      dump(methodArray[i], out);
+    }
+
+    free(methodArray);
+    setDispose(methods, reinterpret_cast<void (*)(void*)>(methodDispose));
   }
 
-  qsort(methodArray, methods->size, sizeof(Method*),
-        reinterpret_cast<int (*)(const void*, const void*)>
-        (methodTotalCompare));
+  if (c->traces) {
+    fprintf(out, "\ntraces by count:\n\n");
 
-  for (unsigned i = 0; i < methods->size; ++i) {
-    dump(methodArray[i], out);
+    qsort(traceArray, c->traces->size, sizeof(Trace*),
+          reinterpret_cast<int (*)(const void*, const void*)>
+          (traceCountCompare));
+
+    for (unsigned i = 0; i < c->traces->size; ++i) {
+      dump(traceArray[i], out);
+      fprintf(out, "\n");
+    }
+
+    free(traceArray);
   }
-
-  fprintf(out, "\nmethods by net count: (total, net, name)\n\n");
-
-  qsort(methodArray, methods->size, sizeof(Method*),
-        reinterpret_cast<int (*)(const void*, const void*)>(methodNetCompare));
-
-  for (unsigned i = 0; i < methods->size; ++i) {
-    dump(methodArray[i], out);
-  }
-
-  free(methodArray);
-  setDispose(methods, reinterpret_cast<void (*)(void*)>(methodDispose));
-
-  fprintf(out, "\ntraces by count:\n\n");
-
-  qsort(traceArray, c->traces->size, sizeof(Trace*),
-        reinterpret_cast<int (*)(const void*, const void*)>(traceCompare));
-
-  for (unsigned i = 0; i < c->traces->size; ++i) {
-    dump(traceArray[i], out);
-    fprintf(out, "\n");
-  }
-
-  free(traceArray);
 }
 
 void
@@ -831,13 +894,7 @@ main(int ac, char** av)
     SymbolTable* symbols = loadElfSymbols(command);
 
     if (symbolFile) {
-      SymbolTable* textSymbols = loadTextSymbols(symbolFile);
-      SymbolTable* merged = append(symbols, textSymbols);
-
-      symbolTableDispose(textSymbols);
-      symbolTableDispose(symbols);
-
-      symbols = merged;
+      symbols = append(symbols, loadTextSymbols(symbolFile));
     }
 
     dump(&context, symbols, out);
