@@ -20,8 +20,6 @@ inline void* operator new(size_t, void* p) throw() { return p; }
 namespace {
 
 #ifdef __x86_64__
-#  define LX "lx"
-
 const int Instruction = RIP;
 const int Base = RBP;
 const int ElfClass = ELFCLASS64;
@@ -32,9 +30,7 @@ typedef Elf64_Ehdr ElfFileHeader;
 typedef Elf64_Shdr ElfSectionHeader;
 
 int elfType(int v) { return ELF64_ST_TYPE(v); }
-#else
-#  define LX "x"
-
+#else // i386
 const int Instruction = EIP;
 const int Base = EBP;
 const int ElfClass = ELFCLASS32;
@@ -59,6 +55,7 @@ handleSignal(int signal, siginfo_t* info, void*)
       or info->si_code == CLD_KILLED
       or info->si_code == CLD_DUMPED)
   {
+    fprintf(stderr, "done\n");
     done = true;
   }
 }
@@ -558,13 +555,24 @@ attach(int thread)
 {
   errno = 0;
   ptrace(PTRACE_ATTACH, thread, 0, 0);
-//   fprintf(stderr, "attach %d errno %s\n", thread, strerror(errno));
+
+  if (errno) fprintf(stderr, "attach %d errno %s\n", thread, strerror(errno));
   
   if (errno) return false;
 
   int status;
   waitpid(thread, &status, WUNTRACED);
-//   fprintf(stderr, "wait %d errno %s\n", thread, strerror(errno));
+
+  if (errno == ECHILD) {
+    errno = 0;
+    while (true) {
+      int x = waitpid(-1, &status, __WCLONE);
+
+      if (x == thread or x < 0 or errno) break;
+    }
+  }
+
+  if (errno) fprintf(stderr, "wait %d errno %s\n", thread, strerror(errno));
 
   return errno == 0;  
 }
@@ -572,8 +580,11 @@ attach(int thread)
 void
 detach(int thread)
 {
+  errno = 0;
   ptrace(PTRACE_DETACH, thread, 0, 0);
-//   fprintf(stderr, "detach %d errno %s\n", thread, strerror(errno));
+
+  if (errno) fprintf(stderr, "detach %d errno %s\n", thread, strerror(errno));
+
   errno = 0;
 }
 
