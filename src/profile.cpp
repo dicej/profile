@@ -747,28 +747,30 @@ dump(Context* c, SymbolTable* symbolTable, FILE* out)
 
       for (Trace::Element* e = t->elements; e; e = e->next) {
         const char* s = e->symbol = findSymbol(symbolTable, e->address);
-        if (s) {
-          unsigned h = hash(s);
-          Method n(s);
+        if (s == 0) {
+          s = "(unknown)";
+        }
 
-          Set::Entry* se = find
-            (methods, &n, h,
-             reinterpret_cast<bool (*)(const void*, const void*)>
-             (methodEqual));
+        unsigned h = hash(s);
+        Method n(s);
 
-          Method* m;
-          if (se) {
-            m = static_cast<Method*>(se->value);
-          } else {
-            m = method(s);
-            add(&methods, m, h);
-          }
+        Set::Entry* se = find
+          (methods, &n, h,
+           reinterpret_cast<bool (*)(const void*, const void*)>
+           (methodEqual));
 
-          m->count += t->count;
+        Method* m;
+        if (se) {
+          m = static_cast<Method*>(se->value);
+        } else {
+          m = method(s);
+          add(&methods, m, h);
+        }
 
-          if (e != t->elements) {
-            m->childCount += t->count;
-          }
+        m->count += t->count;
+
+        if (e != t->elements) {
+          m->childCount += t->count;
         }
       }
     }
