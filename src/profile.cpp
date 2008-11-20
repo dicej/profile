@@ -779,8 +779,6 @@ dump(Context* c, SymbolTable* symbolTable, FILE* out)
   fprintf(out, " total count: %5d\n", total);
 
   if (methods) {
-    fprintf(out, "\nmethods by count: (total, net, name)\n\n");
-  
     Method** methodArray = static_cast<Method**>
       (malloc(methods->size * BytesPerWord));
   
@@ -788,19 +786,21 @@ dump(Context* c, SymbolTable* symbolTable, FILE* out)
       methodArray[i] = static_cast<Method*>(methods->entries[i].value);
     }
 
-    qsort(methodArray, methods->size, sizeof(Method*),
-          reinterpret_cast<int (*)(const void*, const void*)>
-          (methodTotalCompare));
-
-    for (unsigned i = 0; i < methods->size; ++i) {
-      dump(methodArray[i], out);
-    }
-
     fprintf(out, "\nmethods by net count: (total, net, name)\n\n");
 
     qsort(methodArray, methods->size, sizeof(Method*),
           reinterpret_cast<int (*)(const void*, const void*)>
           (methodNetCompare));
+
+    for (unsigned i = 0; i < methods->size; ++i) {
+      dump(methodArray[i], out);
+    }
+
+    fprintf(out, "\nmethods by total count: (total, net, name)\n\n");
+  
+    qsort(methodArray, methods->size, sizeof(Method*),
+          reinterpret_cast<int (*)(const void*, const void*)>
+          (methodTotalCompare));
 
     for (unsigned i = 0; i < methods->size; ++i) {
       dump(methodArray[i], out);
@@ -886,7 +886,7 @@ main(int ac, char** av)
     sigaction(SIGCHLD, &action, 0);
     sigaction(SIGINT, &action, 0);
 
-    timespec interval = { 0, 10000000L };
+    timespec interval = { 0, 1000000L };
 
     Context context(process);
 
