@@ -637,28 +637,31 @@ sample(Context* c)
   snprintf(buffer, BufferSize, "/proc/%d/task", c->process);
 
   DIR* d = opendir(buffer);
-  for (dirent* e = readdir(d); e; e = readdir(d)) {
-    int thread = atoi(e->d_name);
-    if (thread and attach(thread)) {
-      Trace* t = trace(thread);
-      unsigned h = hash(t);
+  if (d) {
+    for (dirent* e = readdir(d); e; e = readdir(d)) {
+      int thread = atoi(e->d_name);
+      if (thread and attach(thread)) {
+        Trace* t = trace(thread);
+        unsigned h = hash(t);
 
-      Set::Entry* se = find
-        (c->traces, t, h, reinterpret_cast<bool (*)(const void*, const void*)>
-         (traceEqual));
+        Set::Entry* se = find
+          (c->traces, t, h,
+           reinterpret_cast<bool (*)(const void*, const void*)>
+           (traceEqual));
 
-      if (se) {
-        traceDispose(t);
-      } else {
-        se = add(&(c->traces), t, h);
-      }
+        if (se) {
+          traceDispose(t);
+        } else {
+          se = add(&(c->traces), t, h);
+        }
 
-      ++ static_cast<Trace*>(se->value)->count;
+        ++ static_cast<Trace*>(se->value)->count;
       
-      detach(thread);
+        detach(thread);
+      }
     }
+    closedir(d);
   }
-  closedir(d);
 }
 
 class Method {
