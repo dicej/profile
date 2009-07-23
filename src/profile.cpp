@@ -48,7 +48,7 @@ bool done = false;
 void
 handleSignal(int signal, siginfo_t* info, void*)
 {
-  //fprintf(stderr, "signal %d\n", signal);
+//   fprintf(stderr, "signal %d\n", signal);
 
   if (signal == SIGINT
       or info->si_code == CLD_EXITED
@@ -550,20 +550,40 @@ findSymbol(SymbolTable* table, uintptr_t address)
   return 0;
 }
 
+void
+detach(int thread)
+{
+//   fprintf(stderr, "detach %d\n", thread);
+
+  errno = 0;
+  ptrace(PTRACE_DETACH, thread, 0, 0);
+
+  if (errno) fprintf(stderr, "detach %d errno %s\n", thread, strerror(errno));
+
+  errno = 0;
+}
+
 bool
 attach(int thread)
 {
+//   fprintf(stderr, "attach %d\n", thread);
+
   errno = 0;
   ptrace(PTRACE_ATTACH, thread, 0, 0);
 
   if (errno) fprintf(stderr, "attach %d errno %s\n", thread, strerror(errno));
   
-  if (errno) return false;
+  if (errno) {
+    detach(thread);
+    return false;
+  }
 
   int status;
   waitpid(thread, &status, WUNTRACED);
 
   if (errno == ECHILD) {
+//     fprintf(stderr, "wait %d errno %s\n", thread, strerror(errno));
+
     errno = 0;
     while (true) {
       int x = waitpid(-1, &status, __WCLONE);
@@ -572,20 +592,21 @@ attach(int thread)
     }
   }
 
-  if (errno) fprintf(stderr, "wait %d errno %s\n", thread, strerror(errno));
+  if (errno or WIFSTOPPED(status) == 0 or WSTOPSIG(status) != SIGSTOP) {
+    fprintf(stderr, "wait %d errno %s stopped %d sig %d\n",
+            thread, strerror(errno), WIFSTOPPED(status), WSTOPSIG(status));
+
+    if (WIFSTOPPED(status)) {
+      ptrace(PTRACE_CONT, thread, 0, 0);
+      if (errno) {
+        fprintf(stderr, "cont %d errno %s\n", thread, strerror(errno));
+      }
+    }
+
+    detach(thread);
+  }
 
   return errno == 0;  
-}
-
-void
-detach(int thread)
-{
-  errno = 0;
-  ptrace(PTRACE_DETACH, thread, 0, 0);
-
-  if (errno) fprintf(stderr, "detach %d errno %s\n", thread, strerror(errno));
-
-  errno = 0;
 }
 
 Trace*
@@ -895,7 +916,18 @@ main(int ac, char** av)
 
     while (not done) {
       sample(&context);
-      nanosleep(&interval, 0);
+
+      timespec remainder;
+      do {
+        if (nanosleep(&interval, &remainder)) {
+          if (errno != EINTR) {
+            fprintf(stderr, "nanosleep errno %s\n", strerror(errno));
+            done = true;
+          }
+        } else {
+          break;
+        }
+      } while ((not done) and (remainder.tv_sec or remainder.tv_nsec));
     }
 
     FILE* out = stdout;

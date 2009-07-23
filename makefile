@@ -6,7 +6,7 @@ build/profile: build/profile.o
 
 build/profile.o: src/profile.cpp
 	@mkdir -p $(dir $(@))
-	g++ -fno-rtti -fno-exceptions -Wall -g -O0 -c $(<) -o $(@)
+	g++ -fno-rtti -fno-exceptions -Wall -Werror -g -O0 -c $(<) -o $(@)
 
 .PHONY: clean
 clean:
