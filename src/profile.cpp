@@ -651,7 +651,7 @@ trace(int thread)
 }
 
 void
-sample(Context* c)
+sample(Context* c, bool mainThreadOnly)
 {
   const unsigned BufferSize = 256;
   char buffer[BufferSize];
@@ -661,7 +661,10 @@ sample(Context* c)
   if (d) {
     for (dirent* e = readdir(d); e; e = readdir(d)) {
       int thread = atoi(e->d_name);
-      if (thread and attach(thread)) {
+      if (thread
+          and ((not mainThreadOnly) or thread == c->process)
+          and attach(thread))
+      {
         Trace* t = trace(thread);
         unsigned h = hash(t);
 
@@ -855,7 +858,7 @@ usage(const char* name)
 {
   fprintf(stderr,
           "usage: %s [-o <output file>] [-s <symbol file>] "
-          "<command> [<argument>...]\n",
+          "[--main-thread-only] <command> [<argument>...]\n",
           name);
 }
 
@@ -867,6 +870,7 @@ main(int ac, char** av)
   const char* outputFile = 0;
   const char* symbolFile = 0;
   int commandStart = 1;
+  bool mainThreadOnly = false;
 
   for (int i = 1; i < ac; ++i) {
     if (strcmp(av[i], "-o") == 0) {
@@ -883,6 +887,8 @@ main(int ac, char** av)
         usage(av[0]);
         return -1;
       }
+    } else if (strcmp(av[i], "--main-thread-only") == 0) {
+      mainThreadOnly = true;
     } else {
       commandStart = i;
       break;
@@ -915,7 +921,7 @@ main(int ac, char** av)
     Context context(process);
 
     while (not done) {
-      sample(&context);
+      sample(&context, mainThreadOnly);
 
       timespec remainder;
       do {
