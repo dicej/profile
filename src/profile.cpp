@@ -1,27 +1,26 @@
-#include "sys/reg.h"
-#include "sys/types.h"
-#include "sys/stat.h"
-#include "sys/mman.h"
-#include "sys/ptrace.h"
-#include "sys/wait.h"
-#include "time.h"
-#include "fcntl.h"
-#include "unistd.h"
-#include "dirent.h"
-#include "elf.h"
-#include "errno.h"
-#include "signal.h"
-#include "stdio.h"
-#include "stdlib.h"
-#include "string.h"
+#include <sys/reg.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <sys/ptrace.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <dirent.h>
+#include <elf.h>
+#include <errno.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <libunwind-ptrace.h>
 
 inline void* operator new(size_t, void* p) throw() { return p; }
 
 namespace {
 
 #ifdef __x86_64__
-const int Instruction = RIP;
-const int Base = RBP;
 const int ElfClass = ELFCLASS64;
 const int ElfArchitecture = EM_X86_64;
 
@@ -31,8 +30,6 @@ typedef Elf64_Shdr ElfSectionHeader;
 
 int elfType(int v) { return ELF64_ST_TYPE(v); }
 #else // i386
-const int Instruction = EIP;
-const int Base = EBP;
 const int ElfClass = ELFCLASS32;
 const int ElfArchitecture = EM_386;
 
@@ -44,6 +41,8 @@ int elfType(int v) { return ELF32_ST_TYPE(v); }
 #endif
 
 bool done = false;
+
+unw_addr_space_t space;
 
 void
 handleSignal(int signal, siginfo_t* info, void*)
@@ -614,38 +613,21 @@ trace(int thread)
 {
   Trace* t = trace();
   Trace::Element* last = 0;
-  uintptr_t ip = ptrace
-    (PTRACE_PEEKUSER, thread, Instruction * BytesPerWord, 0);
-//   fprintf(stderr, "ip %p trace %d errno %s\n", ip, thread, strerror(errno));
 
-  if (errno == 0) {
-    uintptr_t bp = ptrace
-      (PTRACE_PEEKUSER, thread, Base * BytesPerWord, 0);
-//     fprintf(stderr, "bp %p trace %d errno %s\n", bp, thread, strerror(errno));
+  void* upt = _UPT_create(thread);
 
-    if (errno == 0) {
-      add(t, &last, ip);
+  unw_cursor_t cursor;
+  unw_init_remote(&cursor, space, upt);
 
-      while (errno == 0 and bp) {
-        ip = ptrace(PTRACE_PEEKDATA, thread, bp + BytesPerWord, 0);
-//         fprintf(stderr, "ra %p trace %d errno %s\n",
-//                 ip, thread, strerror(errno));
-
-        if (errno == 0) {
-          add(t, &last, ip);
-          
-          uintptr_t next = ptrace(PTRACE_PEEKDATA, thread, bp, 0);
-//           fprintf(stderr, "next bp %p trace %d errno %s\n",
-//                   next, thread, strerror(errno));
-          if (errno or next <= bp) {
-            break;
-          } else {
-            bp = next;
-          }
-        }
-      }
-    }
+  const unsigned limit = 32;
+  unsigned count = 0;
+  while (unw_step(&cursor) > 0 and count++ < limit) {
+    unw_word_t ip;
+    unw_get_reg(&cursor, UNW_REG_IP, &ip);
+    add(t, &last, ip);
   }
+
+  _UPT_destroy(upt);
 
   return t;
 }
@@ -920,6 +902,8 @@ main(int ac, char** av)
 
     Context context(process);
 
+    space = unw_create_addr_space(&_UPT_accessors, __LITTLE_ENDIAN);
+
     while (not done) {
       sample(&context, mainThreadOnly);
 
@@ -935,6 +919,8 @@ main(int ac, char** av)
         }
       } while ((not done) and (remainder.tv_sec or remainder.tv_nsec));
     }
+
+    unw_destroy_addr_space(space);
 
     FILE* out = stdout;
     if (outputFile) {
