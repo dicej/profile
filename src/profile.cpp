@@ -15,8 +15,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <libunwind-ptrace.h>
-
-inline void* operator new(size_t, void* p) throw() { return p; }
+#include <cxxabi.h>
+#include <new>
 
 namespace {
 
@@ -368,9 +368,21 @@ symbolTableDispose(SymbolTable* t)
 }
 
 char*
-copy(const char* s)
+copyAndDemangle(const char* s)
 {
-  return strdup(s);
+  int status = 0;
+  char* d = abi::__cxa_demangle(s, 0, 0, &status);
+  if (d) {
+    return d;
+  } else {
+    size_t length = strlen(s);
+    char* r = static_cast<char*>(malloc(length + 3));
+    if (r) {
+      memcpy(r, s, length);
+      memcpy(r + length, "()", 3);
+    }
+    return r;
+  }
 }
 
 void
@@ -379,7 +391,7 @@ addSymbol(SymbolTable* table, uintptr_t start, unsigned size, const char* name)
   Symbol* s = table->symbols + (table->size++);
   s->start = start;
   s->size = size;
-  s->name = copy(name);
+  s->name = copyAndDemangle(name);
 }
 
 SymbolTable*

@@ -2,7 +2,7 @@
 all: build/profile
 
 build/profile: build/profile.o
-	gcc $(^) -lunwind -lunwind-x86_64 -lunwind-ptrace -o $(@)
+	gcc $(^) -lunwind -lunwind-x86_64 -lunwind-ptrace -lstdc++ -o $(@)
 
 build/profile.o: src/profile.cpp
 	@mkdir -p $(dir $(@))
